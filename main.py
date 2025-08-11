@@ -1,87 +1,86 @@
 """
 Main entry point for the LangGraph AI agent project.
-Defines the graph structure and orchestrates the flow between nodes.
+Uses LangGraph built-in functions for cleaner, more maintainable code.
 """
 
-
+import os
+from dotenv import load_dotenv
 from langgraph.graph import StateGraph, END
-from typing import TypedDict, List, Dict
+from langgraph.prebuilt import ToolExecutor
+from typing import TypedDict, List, Dict, Annotated
+from langchain_core.messages import BaseMessage
+from langchain_google_genai import ChatGoogleGenerativeAI
 
-# Gemini agent utility
-import google.generativeai as genai
+# Load environment variables
+load_dotenv()
 
-def gemini_generate(prompt: str, model_name: str = 'gemini-pro') -> str:
-    """
-    Utility to call Gemini LLM for text generation.
-    """
-    genai.configure(api_key="YOUR_GEMINI_API_KEY")  # Replace with your Gemini API key or load from env
-    model = genai.GenerativeModel(model_name)
-    response = model.generate_content(prompt)
-    return response.text if hasattr(response, 'text') else str(response)
-
-# Import your node functions
+# Import nodes
+from nodes.agent_state import AgentState
 from nodes.memory_manager import memory_manager_node
 from nodes.query_processor import query_processor_node
-from nodes.tool_use import tool_use_node
-from nodes.web_search import web_search_node
+from nodes.tool_selector import tool_selector_node
+from nodes.tool_executor import tool_executor_node
 from nodes.evaluator import evaluator_node
-from nodes.content_extract import content_extract_node
-from nodes.source_verify import source_verify_node
 from nodes.answer_synth import answer_synth_node
 from nodes.feedback_loop import feedback_loop_node
+from nodes.tools import get_tools
 
-# Proper state definition
-class AgentState(TypedDict):
-    user_input: str
-    processed_query: str
-    tools_needed: List[str]
-    search_results: List[Dict]
-    evaluation_result: str
-    extracted_content: List[str]
-    verified_sources: List[str]
-    final_answer: str
-    feedback: str
-    memory_context: Dict
+def should_continue(state: AgentState) -> str:
+    """Determine if we should continue to tool execution or move to evaluation."""
+    if state.get("tools_to_use"):
+        return "execute_tools"
+    return "evaluate"
 
 def create_agent_workflow():
-    """Create the LangGraph workflow based on your sequential flow"""
+    """Create the LangGraph workflow using built-in functions."""
     
     # Initialize the state graph
     workflow = StateGraph(AgentState)
     
-    # Add nodes in your specified order
-    workflow.add_node("MemoryManager", memory_manager_node)
-    workflow.add_node("QueryProcessor", query_processor_node)
-    workflow.add_node("ToolUse", tool_use_node)
-    workflow.add_node("WebSearch", web_search_node)
-    workflow.add_node("Evaluator", evaluator_node)
-    workflow.add_node("ContentExtract", content_extract_node)
-    workflow.add_node("SourceVerify", source_verify_node)
-    workflow.add_node("AnswerSynth", answer_synth_node)
-    workflow.add_node("FeedbackLoop", feedback_loop_node)
+    # Add nodes
+    workflow.add_node("memory_manager", memory_manager_node)
+    workflow.add_node("query_processor", query_processor_node)
+    workflow.add_node("tool_selector", tool_selector_node)
+    workflow.add_node("tool_executor", tool_executor_node)
+    workflow.add_node("evaluator", evaluator_node)
+    workflow.add_node("answer_synth", answer_synth_node)
+    workflow.add_node("feedback_loop", feedback_loop_node)
     
     # Set entry point
-    workflow.set_entry_point("MemoryManager")
+    workflow.set_entry_point("memory_manager")
     
-    # Define the exact sequential flow you specified
-    workflow.add_edge("MemoryManager", "QueryProcessor")
-    workflow.add_edge("QueryProcessor", "ToolUse")
-    workflow.add_edge("ToolUse", "WebSearch")
-    workflow.add_edge("WebSearch", "Evaluator")
-    workflow.add_edge("Evaluator", "ContentExtract")
-    workflow.add_edge("ContentExtract", "SourceVerify")
-    workflow.add_edge("SourceVerify", "AnswerSynth")
-    workflow.add_edge("AnswerSynth", "FeedbackLoop")
-    workflow.add_edge("FeedbackLoop", END)
+    # Define the flow with conditional logic
+    workflow.add_edge("memory_manager", "query_processor")
+    workflow.add_edge("query_processor", "tool_selector")
+    
+    # Conditional edge based on whether tools are needed
+    workflow.add_conditional_edges(
+        "tool_selector",
+        should_continue,
+        {
+            "execute_tools": "tool_executor",
+            "evaluate": "evaluator"
+        }
+    )
+    
+    workflow.add_edge("tool_executor", "evaluator")
+    workflow.add_edge("evaluator", "answer_synth")
+    workflow.add_edge("answer_synth", "feedback_loop")
+    workflow.add_edge("feedback_loop", END)
     
     # Compile the workflow
     return workflow.compile()
 
 def main():
-    """Main execution function following your structure"""
+    """Main execution function."""
     
-    print("🤖 LangGraph AI Search Agent")
-    print("-" * 40)
+    print("🤖 LangGraph AI Search Agent (Refactored)")
+    print("-" * 50)
+    
+    # Verify API keys
+    if not os.getenv("GOOGLE_API_KEY"):
+        print("❌ Please set GOOGLE_API_KEY in your .env file")
+        return
     
     # Create the workflow
     app = create_agent_workflow()
@@ -97,36 +96,37 @@ def main():
             if not user_input:
                 continue
             
-            # Initialize state with your structure
-            initial_state = AgentState({
+            # Initialize state
+            initial_state = {
                 'user_input': user_input,
+                'messages': [],
                 'processed_query': '',
-                'tools_needed': [],
-                'search_results': [],
+                'tools_to_use': [],
+                'tool_results': [],
                 'evaluation_result': '',
-                'extracted_content': [],
-                'verified_sources': [],
                 'final_answer': '',
                 'feedback': '',
                 'memory_context': {}
-            })
+            }
             
-            print("\n🔄 Processing through your graph flow...")
+            print("\n🔄 Processing through the graph...")
             
             # Execute the workflow
             result = app.invoke(initial_state)
             
             # Display the final answer
-            print('\n' + '='*50)
+            print('\n' + '='*60)
             print('🎯 FINAL ANSWER:')
-            print('='*50)
+            print('='*60)
             print(result.get('final_answer', 'No answer generated.'))
             
-            # Show additional info if available
-            if result.get('verified_sources'):
-                print('\n📚 Sources:')
-                for i, source in enumerate(result['verified_sources'][:3], 1):
-                    print(f"  {i}. {source}")
+            # Show tool results if available
+            if result.get('tool_results'):
+                print('\n📊 Information Sources:')
+                for i, tool_result in enumerate(result['tool_results'][:3], 1):
+                    if isinstance(tool_result, dict) and 'content' in tool_result:
+                        content = str(tool_result['content'])[:100] + "..." if len(str(tool_result['content'])) > 100 else str(tool_result['content'])
+                        print(f"  {i}. {content}")
             
             if result.get('feedback'):
                 print(f'\n💭 Feedback: {result["feedback"]}')
